@@ -1,6 +1,8 @@
 import tensorflow as tf
-from tensorflow.python import control_flow_ops
-import input_data
+import numpy as np
+np.random.seed(0)
+from tensorflow.python.ops import control_flow_ops
+
 import math
 import os
 import csv
@@ -202,7 +204,35 @@ with tf.control_dependencies([train_step]):
     train_step = tf.group(bn_updates)
 
 print "===  Loading Data ==="
-mnist = input_data.read_data_sets("MNIST_data", n_labeled=num_labeled, one_hot=True)
+
+import cPickle, gzip
+f = gzip.open('data/mnist.pkl.gz', 'rb')
+train_set, valid_set, test_set = cPickle.load(f)
+f.close()
+
+num_classes = 10
+nlb = 10
+total_samples = nlb*num_classes
+train_set_label = [np.zeros((total_samples, 784)), np.zeros((total_samples,))]
+
+for i in xrange(num_classes):
+    condlist = train_set[1]==float(i)
+    examples = train_set[0][condlist]      
+    rand_indices = np.random.randint(examples.shape[0], size=nlb)
+    train_set_label[0][nlb*i:nlb*(i+1)] = examples[rand_indices]
+    train_set_label[1][nlb*i:nlb*(i+1)] = float(i)*np.ones((nlb,))
+
+
+num_pts = train_set_label[0].shape[0]
+labels_ = train_set_label[1]
+labels = np.zeros((num_pts,10))
+labels[np.arange(num_pts), labels_.astype(np.int)] = 1.0
+train_set_label[1] = labels
+
+num_pts_val = valid_set[0].shape[0]
+valid_labels_ = valid_set[1]
+valid_labels = np.zeros((num_pts_val,10))
+valid_labels[np.arange(num_pts_val), valid_labels_] = 1.0
 
 saver = tf.train.Saver()
 
@@ -211,26 +241,28 @@ sess = tf.Session()
 
 i_iter = 0
 
-ckpt = tf.train.get_checkpoint_state('checkpoints/')  # get latest checkpoint (if any)
-if ckpt and ckpt.model_checkpoint_path:
-    # if checkpoint exists, restore the parameters and set epoch_n and i_iter
-    saver.restore(sess, ckpt.model_checkpoint_path)
-    epoch_n = int(ckpt.model_checkpoint_path.split('-')[1])
-    i_iter = (epoch_n+1) * (num_examples/batch_size)
-    print "Restored Epoch ", epoch_n
-else:
-    # no checkpoint exists. create checkpoints directory if it does not exist.
-    if not os.path.exists('checkpoints'):
-        os.makedirs('checkpoints')
-    init = tf.initialize_all_variables()
-    sess.run(init)
+if not os.path.exists('checkpoints'):
+    os.makedirs('checkpoints')
+init = tf.initialize_all_variables()
+sess.run(init)
 
 print "=== Training ==="
-print "Initial Accuracy: ", sess.run(accuracy, feed_dict={inputs: mnist.test.images, outputs: mnist.test.labels, training: False}), "%"
+print "Initial Accuracy: ", sess.run(accuracy, feed_dict={inputs: valid_set[0], outputs: valid_labels, training: False}), "%"
+
+num_points_unlabeled = train_set[0].shape[0]
+num_points_labeled = train_set_label[0].shape[0]
 
 for i in tqdm(range(i_iter, num_iter)):
-    images, labels = mnist.train.next_batch(batch_size)
-    sess.run(train_step, feed_dict={inputs: images, outputs: labels, training: True})
+
+    batch_ind_unlabeled = np.random.randint(num_points_unlabeled, size=100)
+    batch_ind_labeled = np.random.randint(num_points_labeled, size=100)
+
+    images_u = train_set[0][batch_ind_unlabeled]
+    images_l = train_set_label[0][batch_ind_labeled]
+    labels = train_set_label[1][batch_ind_labeled]
+    #images, labels = mnist.train.next_batch(batch_size)
+    
+    sess.run(train_step, feed_dict={inputs: np.vstack([images_l, images_u]), outputs: labels, training: True})
     if (i > 1) and ((i+1) % (num_iter/num_epochs) == 0):
         epoch_n = i/(num_examples/batch_size)
         if (epoch_n+1) >= decay_after:
@@ -244,9 +276,11 @@ for i in tqdm(range(i_iter, num_iter)):
         with open('train_log', 'ab') as train_log:
             # write test accuracy to file "train_log"
             train_log_w = csv.writer(train_log)
-            log_i = [epoch_n] + sess.run([accuracy], feed_dict={inputs: mnist.test.images, outputs: mnist.test.labels, training: False})
+            tmp = sess.run([accuracy], feed_dict={inputs: valid_set[0], outputs: valid_labels, training: False})
+            log_i = [epoch_n] + tmp
+            print "Current Accuracy: ", tmp[0]
             train_log_w.writerow(log_i)
 
-print "Final Accuracy: ", sess.run(accuracy, feed_dict={inputs: mnist.test.images, outputs: mnist.test.labels, training: False}), "%"
+print "Final Accuracy: ", sess.run(accuracy, feed_dict={inputs: valid_set[0], outputs: valid_labels, training: False}), "%"
 
 sess.close()
